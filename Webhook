@@ -1,0 +1,31 @@
+# main.py
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+app = FastAPI(title="AI CEO Orchestrator")
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.post("/Webhook")
+async def receive_whatsapp_webhook(request: Request):
+    """
+    نقطة نهاية موحدة لاستقبال جميع أحداث Evolution API (رسائل، presence، إلخ).
+    """
+    try:
+        payload = await request.json()
+        print("Received Event from Evolution API:", payload.get("event"))
+        # لاحقاً: توجيه للـ AI Agent المناسب حسب نوع الحدث/الرسالة
+        # await route_to_ai_agent(payload)
+
+        return JSONResponse(content={"status": "success"}, status_code=200)
+
+    except Exception as e:
+        print(f"Webhook Error: {str(e)}")
+        # نعيد 200 حتى لا يعيد Evolution المحاولة بشكل متكرر
+        return JSONResponse(
+            content={"status": "error", "message": "Failed to process"},
+            status_code=200,
+        )

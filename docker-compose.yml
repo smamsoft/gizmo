@@ -1,0 +1,171 @@
+version: "3.8"
+
+services:
+  smam_postgres:
+    image: postgres:15-alpine
+    container_name: smam_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai_network
+
+  smam_redis:
+    image: redis:7-alpine
+    container_name: smam_redis
+    restart: always
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai_network
+
+  smam_rabbitmq:
+    image: rabbitmq:3-management
+    container_name: smam_rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    networks:
+      - ai_network
+
+  smam_evolution:
+    image: evoapicloud/evolution-api:latest
+    container_name: smam_evolution
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_PORT: 8080
+      AUTH_MODE: apikey
+      AUTHENTICATION_API_KEY: ${EVO_API_KEY}
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@smam_postgres:5432/${POSTGRES_DB}?sslmode=disable
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: ${CACHE_REDIS_URI}
+      REDIS_ENABLED: "false"
+      RABBITMQ_ENABLED: "false"
+      RABBITMQ_URI: ""
+      WEBHOOK_GLOBAL_ENABLED: "false"
+      WEBHOOK_GLOBAL_URL: http://smam_n8n:5678/webhook/sultan/router?secret=${WEBHOOK_SECRET}
+    depends_on:
+      smam_postgres:
+        condition: service_healthy
+    networks:
+      - ai_network
+
+  smam_n8n:
+    image: n8nio/n8n:1.71.1
+    container_name: smam_n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: smam_postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: admin
+      N8N_BASIC_AUTH_PASSWORD: change_me_please
+      N8N_HOST: smam_n8n
+      N8N_PORT: 5678
+      WEBHOOK_URL: http://smam_n8n:5678/
+      N8N_SECURE_COOKIE: "false"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n_workflows:/data/n8n-workflows
+    depends_on:
+      smam_postgres:
+        condition: service_healthy
+    networks:
+      - ai_network
+
+  smam_orchestrator:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: smam_orchestrator
+    restart: always
+    env_file: .env
+    ports:
+      - "8050:8050"
+    volumes:
+      - .:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8050
+    depends_on:
+      - smam_postgres
+      - smam_evolution
+      - smam_redis
+      - smam_rabbitmq
+    networks:
+      - ai_network
+
+  smam_worker:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: smam_worker
+    restart: always
+    env_file: .env
+    volumes:
+      - .:/app
+    command: python worker.py
+    depends_on:
+      - smam_rabbitmq
+      - smam_orchestrator
+    networks:
+      - ai_network
+
+  # smam_sync:
+  #   build:
+  #     context: ./sync_service
+  #     dockerfile: dockerfile
+  #   container_name: smam_sync
+  #   restart: always
+  #   env_file: .env
+  #   command: python gizmo_sync.py
+  #   volumes:
+  #     - ./sync_service:/app
+  #   depends_on:
+  #     - smam_redis
+  #   networks:
+  #     - ai_network
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: always
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TOKEN}
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TOKEN}
+    volumes:
+      - ./cloudflared:/etc/cloudflared
+    networks:
+      - ai_network
+
+networks:
+  ai_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_data:
+  cloudflared:
